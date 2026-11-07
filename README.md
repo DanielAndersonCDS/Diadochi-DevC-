@@ -14,7 +14,7 @@
 ## Download
 
 **[Download the latest release](../../releases/latest)**, unzip it, and run `Diadochi-DevCpp.exe`.
-Requires [Dev-C++]((https://sourceforge.net/projects/orwelldevcpp/)) to be installed.
+Requires [Dev-C++](https://sourceforge.net/projects/orwelldevcpp/) to be installed.
 
 ## Why
 
