@@ -11,6 +11,11 @@
 
 ---
 
+## Download
+
+**[Download the latest release](../../releases/latest)**, unzip it, and run `Diadochi-DevCpp.exe`.
+Requires [Dev-C++](https://github.com/Embarcadero/Dev-Cpp) to be installed.
+
 ## Why
 
 Dev-C++ is a fast, friendly way to start with C and C++, but its editor looks dated and it lets you build code that
