@@ -196,6 +196,3 @@ build.rs           embeds the exe icon
 
 Run the rule and formatter tests with `cargo test`.
 
-## License
-
-Add a license before publishing (MIT is a common choice for tools like this).
