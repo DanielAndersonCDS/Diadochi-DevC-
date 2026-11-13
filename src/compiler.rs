@@ -19,6 +19,7 @@ pub struct BuildOptions {
     pub deep: bool,
     pub stack_protector: bool,
     pub strict: bool,
+    pub p10: bool,
 }
 
 pub struct BuildResult {
@@ -148,6 +149,12 @@ pub fn build(tc: &Toolchain, src: &Path, lang: Lang, o: &BuildOptions) -> BuildR
         args.push("-Werror=format-security".into());
         if lang == Lang::C {
             args.push("-Werror=implicit-function-declaration".into());
+        }
+    }
+    if o.p10 {
+        // Power of 10 rule 10: most pedantic warnings, and zero warnings allowed
+        for f in ["-Werror", "-Wconversion", "-Wundef", "-Wswitch-default"] {
+            args.push(f.into());
         }
     }
     if o.stack_protector {

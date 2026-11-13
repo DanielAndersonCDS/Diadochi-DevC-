@@ -48,6 +48,7 @@ struct Settings {
     toolchain_dir: String,
     auto_edit: bool,
     format_on_save: bool,
+    power10: bool,
 }
 
 impl Default for Settings {
@@ -63,6 +64,7 @@ impl Default for Settings {
             toolchain_dir: String::new(),
             auto_edit: true,
             format_on_save: false,
+            power10: false,
         }
     }
 }
@@ -165,6 +167,7 @@ struct App {
     show_settings: bool,
     show_rules: bool,
     last_title: String,
+    p10_build: Option<bool>,
 }
 
 fn first_readable(paths: &[PathBuf]) -> Option<Vec<u8>> {
@@ -235,6 +238,7 @@ impl App {
             show_settings: false,
             show_rules: false,
             last_title: String::new(),
+            p10_build: None,
         };
         app.recheck();
         app
@@ -274,7 +278,7 @@ impl App {
         self.safety = if self.settings.mode == Mode::Off {
             Vec::new()
         } else {
-            safety::analyze(&self.text, self.lang())
+            safety::analyze_opts(&self.text, self.lang(), self.settings.power10)
         };
     }
 
@@ -379,6 +383,7 @@ impl App {
             deep: self.settings.deep_analysis,
             stack_protector: self.settings.stack_protector,
             strict: self.settings.mode == Mode::Strict,
+            p10: self.settings.power10,
         };
         let (tx, rx) = channel();
         self.rx = Some(rx);
@@ -401,6 +406,9 @@ impl App {
             r.raw,
             if r.ok { "Build succeeded." } else { "Build failed." }
         );
+        if self.settings.power10 {
+            self.p10_build = Some(r.ok);
+        }
         self.gcc_diags = r.diagnostics;
         self.tab = if r.ok { Tab::Build } else { Tab::Problems };
         self.status = if r.ok { "Build succeeded".into() } else { "Build failed".into() };
@@ -516,6 +524,18 @@ impl App {
                             ui.selectable_value(&mut self.settings.theme, t, t.name());
                         }
                     });
+                let p10_before = self.settings.power10;
+                ui.checkbox(&mut self.settings.power10, "Power of 10");
+                if p10_before != self.settings.power10 {
+                    if self.settings.power10 {
+                        if self.settings.mode == Mode::Off {
+                            self.settings.mode = Mode::Strict;
+                        }
+                        self.settings.theme = ThemeKind::Space;
+                    }
+                    self.p10_build = None;
+                    act = Some(Action::Check);
+                }
                 let before = self.settings.mode;
                 egui::ComboBox::from_id_source("mode_combo")
                     .selected_text(format!("Safety: {}", self.settings.mode.name()))
@@ -612,9 +632,81 @@ impl App {
         }
         if changed || pre_changed {
             self.dirty = true;
+            self.p10_build = None;
             self.gcc_diags.clear();
             self.recheck();
         }
+    }
+
+
+    fn checklist_ui(&self, ui: &mut egui::Ui, pal: &Palette) -> Option<usize> {
+        let mut counts = [0usize; 10];
+        let mut first_line: [Option<usize>; 10] = [None; 10];
+        for d in self.safety.iter() {
+            if !matches!(d.severity, Severity::Error | Severity::Warning) || !d.code.starts_with("P10-") {
+                continue;
+            }
+            if let Ok(n) = d.code[4..].parse::<usize>() {
+                if (1..=10).contains(&n) {
+                    counts[n - 1] += 1;
+                    first_line[n - 1].get_or_insert(d.line);
+                }
+            }
+        }
+        let checked = [true, true, true, true, true, false, false, true, true, true];
+        let mut jump = None;
+
+        ui.label(RichText::new("PRE-LAUNCH CHECKLIST").strong().size(15.0).color(pal.accent));
+        ui.label(RichText::new("NASA/JPL Power of 10 (heuristic check)").small().color(pal.subtext));
+        ui.add_space(8.0);
+
+        let mut total = 0usize;
+        for n in 1..=10usize {
+            let i = n - 1;
+            let (color, status) = if n == 10 {
+                match self.p10_build {
+                    Some(true) => (pal.ok, "GO".to_string()),
+                    Some(false) => (pal.error, "NO-GO".to_string()),
+                    None => (pal.warning, "BUILD".to_string()),
+                }
+            } else if !checked[i] {
+                (pal.gutter, "N/A".to_string())
+            } else if counts[i] == 0 {
+                (pal.ok, "GO".to_string())
+            } else {
+                total += counts[i];
+                (pal.error, format!("NO-GO x{}", counts[i]))
+            };
+            let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 26.0), egui::Sense::click());
+            if resp.hovered() {
+                ui.painter().rect_filled(rect, 2.0, pal.surface);
+            }
+            let p = ui.painter();
+            p.circle_filled(rect.left_center() + egui::vec2(10.0, 0.0), 6.0, color);
+            p.text(
+                rect.left_center() + egui::vec2(26.0, 0.0),
+                egui::Align2::LEFT_CENTER,
+                format!("{:>2}  {}", n, safety::P10_TITLES[i]),
+                FontId::monospace(12.5),
+                pal.text,
+            );
+            p.text(rect.right_center() - egui::vec2(4.0, 0.0), egui::Align2::RIGHT_CENTER, status, FontId::monospace(12.0), color);
+            if resp.clicked() {
+                jump = first_line[i];
+            }
+        }
+        ui.add_space(10.0);
+        ui.separator();
+        let go = total == 0 && self.p10_build != Some(false);
+        let (txt, col) = if go {
+            ("ALL CHECKED RULES: GO".to_string(), pal.ok)
+        } else {
+            (format!("NO-GO: {} violation(s)", total), pal.error)
+        };
+        ui.label(RichText::new(txt).strong().size(14.0).color(col));
+        ui.add_space(4.0);
+        ui.label(RichText::new("Rules 6 and 7 are not checked yet. Rule 10 needs a build (-Werror).\nA clean result is not a certification.").small().color(pal.subtext));
+        jump
     }
 
     fn problems_ui(&self, ui: &mut egui::Ui, pal: &Palette) -> Option<usize> {
@@ -797,6 +889,20 @@ impl eframe::App for App {
             });
         if let Some(l) = jump {
             self.jump_to = Some(l);
+        }
+
+        if self.settings.power10 && self.settings.mode != Mode::Off {
+            let mut jump2: Option<usize> = None;
+            egui::SidePanel::right("p10_checklist")
+                .resizable(false)
+                .exact_width(290.0)
+                .frame(egui::Frame::none().fill(pal.panel).inner_margin(egui::Margin::same(12.0_f32)).stroke(egui::Stroke::new(1.0_f32, pal.border)))
+                .show(ctx, |ui| {
+                    jump2 = self.checklist_ui(ui, &pal);
+                });
+            if let Some(l) = jump2 {
+                self.jump_to = Some(l);
+            }
         }
 
         egui::CentralPanel::default()

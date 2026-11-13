@@ -13,8 +13,10 @@
 
 ## Download
 
-**[Download the latest release](../../releases/latest)**, unzip it, and run `Diadochi-DevCpp.exe`.
-Requires [Dev-C++](https://sourceforge.net/projects/orwelldevcpp/) to be installed.
+**[Download the latest release](https://github.com/DanielAndersonCDS/Diadochi-DevC-/releases/latest)**, unzip it and run `Diadochi-DevCpp.exe`.
+Requires [Dev-C++](https://github.com/Embarcadero/Dev-Cpp) to be installed (the app uses its compiler).
+
+Windows may show "Windows protected your PC" because the exe is not code-signed. Click **More info**, then **Run anyway**.
 
 ## Why
 
@@ -27,7 +29,8 @@ checker that stops the classic memory mistakes *before* you build.
 ## Features
 
 - **Uses your existing Dev-C++ compiler.** Auto-detects the install, or you point it at the folder.
-- **Three themes:** Bloomberg terminal (dark, amber on black), Catppuccin Mocha (dark), Windows 11 (light).
+- **Four themes:** Bloomberg terminal (dark, amber on black), Catppuccin Mocha (dark), Windows 11 (light), and **SpaceMode** (NASA-inspired mission-control look, navy with NASA red).
+- **Power of 10 mode (optional):** checks your code against the NASA/JPL *Power of 10* safety-critical rules, with a pre-launch GO / NO-GO checklist.
 - **Rust-style safety rules** for C and C++, shown rustc-style with a code frame, a caret, and a `help:` fix.
 - **Strict mode:** safety errors block Build and Run, like rustc refusing to compile.
 - **Waivers:** silence a finding on purpose, but you must give a reason (the equivalent of `unsafe`).
@@ -58,6 +61,7 @@ Strict mode blocks on **errors**. Warnings are shown but never block.
 | DR108 | error | local variable read before it is assigned |
 | DR109 | error | constant array index out of bounds |
 | DR110 | error | off-by-one loop (`i <= SIZE` indexing an array of `SIZE`) |
+| P10-1 to P10-9 | error | Power of 10 mode only (see above) |
 | DR005-007, DR009-017, DR102 | warning | `atoi`, `system`, `goto`, `void main`, `fflush(stdin)`, string literal to `char*`, raw `new`/`delete`, C-style casts, mutable globals, `alloca`, `strncpy`, unsafe `realloc` |
 
 The full list is in the app under **Rules**.
@@ -81,6 +85,30 @@ strcpy(buf, name);
 
 A waiver without a reason is ignored. Waived findings stay in the Problems list as an audit trail.
 
+## Power of 10 mode (NASA/JPL rules)
+
+Turn on **Power of 10** in the toolbar. It adds Gerard Holzmann's *Power of 10: Rules for Developing
+Safety-Critical Code* on top of Strict mode and switches to the SpaceMode theme. A **pre-launch checklist**
+panel shows GO / NO-GO for each rule; click a row to jump to the first violation. Findings use codes
+`P10-1` to `P10-9` and can be waived with a reason like any other rule.
+
+| # | Rule | Status |
+|---|------|--------|
+| 1 | No `goto`, `setjmp`, `longjmp`; no direct or indirect recursion | checked |
+| 2 | Every loop has a fixed bound the checker can prove (a literal or an ALL_CAPS constant) | checked (strict on purpose) |
+| 3 | No dynamic allocation after init (allowed inside `init*` / `setup*` functions) | checked |
+| 4 | Functions of at most 60 lines | checked |
+| 5 | At least 2 `assert`s per function (functions of 3 lines or fewer are exempt) | checked (count only) |
+| 6 | Smallest possible scope for data | not checked yet |
+| 7 | Check every return value and every parameter | not checked yet |
+| 8 | Limited preprocessor: no `##`, no variadic macros, at most 3 `#if` | checked |
+| 9 | One level of dereference at most, no function pointers | checked |
+| 10 | Pedantic warnings, zero warnings | build adds `-Werror -Wconversion -Wundef -Wswitch-default` |
+
+This is a heuristic check, **not** a certification, and the project is not affiliated with NASA or JPL.
+The rules were written for C; in C++ only the allocation rule also covers `new` / `delete`.
+Expect plenty of NO-GO on ordinary code: that is the point of the mode, so it is off by default.
+
 ## Modes
 
 | Mode | Behaviour |
@@ -94,8 +122,8 @@ A waiver without a reason is ignored. Waived findings stay in the Problems list 
 Requirements: Windows, [Rust](https://rustup.rs) (stable), and [Dev-C++](https://github.com/Embarcadero/Dev-Cpp) (Orwell 5.11 or Embarcadero).
 
 ```
-git clone <this repo>
-cd diadochi-devcpp
+git clone https://github.com/DanielAndersonCDS/Diadochi-DevC-.git
+cd Diadochi-DevC-
 build.bat
 ```
 
@@ -168,3 +196,6 @@ build.rs           embeds the exe icon
 
 Run the rule and formatter tests with `cargo test`.
 
+## License
+
+Add a license before publishing (MIT is a common choice for tools like this).

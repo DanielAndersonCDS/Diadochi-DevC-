@@ -72,6 +72,13 @@ pub const RULE_DOCS: &[(&str, &str)] = &[
     ("DR108", "local variable read before it is assigned"),
     ("DR109", "constant array index out of bounds"),
     ("DR110", "off-by-one loop bound: i <= SIZE indexing an array of SIZE"),
+    ("P10-1", "Power of 10 #1: no goto/setjmp/longjmp, no recursion"),
+    ("P10-2", "Power of 10 #2: every loop needs a provable fixed upper bound"),
+    ("P10-3", "Power of 10 #3: no dynamic allocation after initialization"),
+    ("P10-4", "Power of 10 #4: functions of at most 60 lines"),
+    ("P10-5", "Power of 10 #5: at least 2 assertions per function"),
+    ("P10-8", "Power of 10 #8: limited preprocessor (no ##, no variadic macros)"),
+    ("P10-9", "Power of 10 #9: at most one level of dereference, no function pointers"),
 ];
 
 // ───────────────────────── helpers ─────────────────────────
@@ -932,7 +939,7 @@ fn check_function(
 // ───────────────────────── waivers (the `unsafe { }` escape hatch) ─────────────────────────
 
 fn apply_waivers(raw: &[&str], out: &mut [Diagnostic]) {
-    let re = rx!(r"diadochi:allow\(\s*([A-Za-z0-9_,\s]+?)\s*\)\s*(?::|-)?\s*(.*)$");
+    let re = rx!(r"diadochi:allow\(\s*([A-Za-z0-9_,\s-]+?)\s*\)\s*(?::|-)?\s*(.*)$");
     for d in out.iter_mut() {
         if !matches!(d.severity, Severity::Error | Severity::Warning) {
             continue;
@@ -962,9 +969,231 @@ fn apply_waivers(raw: &[&str], out: &mut [Diagnostic]) {
     }
 }
 
+// ───────────────────────── Power of 10 (NASA/JPL) ─────────────────────────
+// Gerard Holzmann's "Power of 10: Rules for Developing Safety-Critical Code".
+// Rules 1-5, 8, 9 are checked here (heuristically); rule 10 is enforced through compiler flags;
+// rules 6 and 7 are not checked yet.
+
+pub const P10_TITLES: [&str; 10] = [
+    "Simple control flow",
+    "Bounded loops",
+    "No allocation after init",
+    "Short functions",
+    "Assertions",
+    "Smallest scope",
+    "Check returns and params",
+    "Limited preprocessor",
+    "Limited pointers",
+    "Pedantic warnings",
+];
+
+fn fn_name(header: &str) -> Option<String> {
+    let pre = header.split('(').next()?;
+    pre.rsplit(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .find(|t| !t.is_empty())
+        .map(str::to_string)
+}
+
+fn p10_rules(clean: &[String], lay: &Layout, lang: Lang, out: &mut Vec<Diagnostic>) {
+    let nfn = lay.functions.len();
+    let names: Vec<Option<String>> = lay.functions.iter().map(|f| fn_name(&f.header)).collect();
+    let owner = |line: usize| lay.functions.iter().position(|f| line >= f.start && line <= f.end);
+    let last_line = clean.len().saturating_sub(1);
+
+    // ── Rule 1: no goto / setjmp / longjmp, no recursion
+    let ctrl = rx!(r"\b(goto|setjmp|longjmp)\b");
+    for (i, line) in clean.iter().enumerate() {
+        if line.trim_start().starts_with('#') {
+            continue;
+        }
+        for c in ctrl.captures_iter(line) {
+            let m = c.get(1).unwrap();
+            push(out, Severity::Error, "P10-1", format!("{} breaks the simple-control-flow rule", m.as_str()),
+                 i, col_of(line, m.start()), col_of(line, m.end()),
+                 Some("use plain if / for / while / switch and return".into()));
+        }
+    }
+    let call_res: Vec<Option<Regex>> = names
+        .iter()
+        .map(|n| n.as_ref().map(|n| Regex::new(&format!(r"\b{}\s*\(", regex::escape(n))).unwrap()))
+        .collect();
+    let mut calls: Vec<Vec<usize>> = vec![Vec::new(); nfn];
+    for (fi, f) in lay.functions.iter().enumerate() {
+        let last = f.end.min(last_line);
+        for (gi, re) in call_res.iter().enumerate() {
+            let Some(re) = re else { continue };
+            if ((f.start + 1)..=last).any(|k| re.is_match(&clean[k])) {
+                calls[fi].push(gi);
+            }
+        }
+    }
+    for fi in 0..nfn {
+        let mut seen = vec![false; nfn];
+        let mut stack: Vec<usize> = calls[fi].clone();
+        let mut recursive = false;
+        while let Some(x) = stack.pop() {
+            if x == fi {
+                recursive = true;
+                break;
+            }
+            if seen[x] {
+                continue;
+            }
+            seen[x] = true;
+            stack.extend(calls[x].iter().copied());
+        }
+        if recursive {
+            let direct = calls[fi].contains(&fi);
+            let name = names[fi].clone().unwrap_or_default();
+            push(out, Severity::Error, "P10-1",
+                 format!("'{}' is {} recursive: its stack use cannot be bounded", name, if direct { "directly" } else { "indirectly" }),
+                 lay.functions[fi].start, 0, clean[lay.functions[fi].start].len(),
+                 Some("rewrite it as a loop with a fixed upper bound".into()));
+        }
+    }
+
+    // ── Rule 2: every loop has a provable fixed upper bound
+    let for_re = rx!(r"\b(for)\s*\(([^;]*);([^;]*);([^)]*)\)");
+    let while_re = rx!(r"\b(while)\s*\(([^)]*)\)");
+    let bound = rx!(r"(?:[<>]=?|!=)\s*(?:\d+|[A-Z][A-Z0-9_]*)\b|\b(?:\d+|[A-Z][A-Z0-9_]*)\s*(?:[<>]=?|!=)");
+    let loop_help = "compare against a constant, e.g. for (i = 0; i < n && i < MAX_ITEMS; i++)";
+    for (i, line) in clean.iter().enumerate() {
+        if line.trim_start().starts_with('#') {
+            continue;
+        }
+        for c in for_re.captures_iter(line) {
+            if !bound.is_match(&c[3]) {
+                let m = c.get(1).unwrap();
+                push(out, Severity::Error, "P10-2", "loop bound cannot be proven statically".into(),
+                     i, col_of(line, m.start()), col_of(line, m.end()), Some(loop_help.into()));
+            }
+        }
+        for c in while_re.captures_iter(line) {
+            if !bound.is_match(&c[2]) {
+                let m = c.get(1).unwrap();
+                push(out, Severity::Error, "P10-2", "loop bound cannot be proven statically".into(),
+                     i, col_of(line, m.start()), col_of(line, m.end()), Some(loop_help.into()));
+            }
+        }
+    }
+
+    // ── Rule 3: no dynamic allocation after initialization (allowed in init*/setup* functions)
+    let alloc_c = rx!(r"\b(malloc|calloc|realloc|free|strdup|_strdup|alloca)\s*\(");
+    let alloc_cpp = rx!(r"(?:^|[^\w:])(new|delete)\b\s*(?:\[\s*\]\s*)?[A-Za-z_*(]");
+    let mut alloc_res: Vec<&Regex> = vec![alloc_c];
+    if lang == Lang::Cpp {
+        alloc_res.push(alloc_cpp);
+    }
+    for (i, line) in clean.iter().enumerate() {
+        if line.trim_start().starts_with('#') || line.contains("operator") {
+            continue;
+        }
+        let Some(fi) = owner(i) else { continue };
+        let nm = names[fi].clone().unwrap_or_default().to_lowercase();
+        if nm.starts_with("init") || nm.starts_with("setup") {
+            continue;
+        }
+        for re in &alloc_res {
+            for c in re.captures_iter(line) {
+                let m = c.get(1).unwrap();
+                push(out, Severity::Error, "P10-3",
+                     format!("{} allocates or frees memory outside an init function", m.as_str()),
+                     i, col_of(line, m.start()), col_of(line, m.end()),
+                     Some("allocate once in an init*/setup* function, or use static buffers".into()));
+            }
+        }
+    }
+
+    // ── Rules 4 and 5: function length and assertion density
+    let assert_re = rx!(r"\b(?:assert|ASSERT)\s*\(");
+    for (fi, f) in lay.functions.iter().enumerate() {
+        let last = f.end.min(last_line);
+        let code_lines = (f.start..=last).filter(|&k| !clean[k].trim().is_empty()).count();
+        let name = names[fi].clone().unwrap_or_default();
+        if code_lines > 60 {
+            push(out, Severity::Error, "P10-4",
+                 format!("'{}' is {} lines long (limit 60)", name, code_lines),
+                 f.start, 0, clean[f.start].len(),
+                 Some("split it into smaller functions that each do one thing".into()));
+        }
+        if code_lines > 3 {
+            let n = (f.start..=last).map(|k| assert_re.find_iter(&clean[k]).count()).sum::<usize>();
+            if n < 2 {
+                push(out, Severity::Error, "P10-5",
+                     format!("'{}' has {} assertion(s); at least 2 are required", name, n),
+                     f.start, 0, clean[f.start].len(),
+                     Some("assert(cond) things that must never happen, and return an error code when they do".into()));
+            }
+        }
+    }
+
+    // ── Rule 8: limited preprocessor
+    let cond = rx!(r"^#\s*(?:if|ifdef|ifndef)\b");
+    let mut conds = 0;
+    for (i, line) in clean.iter().enumerate() {
+        let t = line.trim_start();
+        if !t.starts_with('#') {
+            continue;
+        }
+        if t.starts_with("#define") || t.starts_with("# define") {
+            if let Some(p) = t.find("##") {
+                push(out, Severity::Error, "P10-8", "token pasting (##) is not allowed".into(), i, p, p + 2, None);
+            }
+            if let Some(p) = t.find("...").or_else(|| t.find("__VA_ARGS__")) {
+                push(out, Severity::Error, "P10-8", "variadic macros are not allowed".into(), i, p, p + 3, None);
+            }
+        }
+        if cond.is_match(t) {
+            conds += 1;
+            if conds == 4 {
+                push(out, Severity::Error, "P10-8", "more than 3 conditional-compilation directives".into(),
+                     i, 0, t.len(), Some("keep #if / #ifdef to a minimum".into()));
+            }
+        }
+    }
+
+    // ── Rule 9: limited pointers
+    let fnptr = rx!(r"\(\s*\*\s*[A-Za-z_]\w*\s*\)\s*\(");
+    let dstar = rx!(r"\*\s*\*\s*[A-Za-z_(]");
+    let arrows = rx!(r"\w+(?:\[[^\]]*\])?\s*->\s*\w+(?:\[[^\]]*\])?\s*->");
+    let macro_deref = rx!(r"->|(?:^|[(=,])\s*\*\s*\w");
+    for (i, line) in clean.iter().enumerate() {
+        let t = line.trim_start();
+        if t.starts_with("#define") || t.starts_with("# define") {
+            let body = t.splitn(3, char::is_whitespace).nth(2).unwrap_or("");
+            if macro_deref.is_match(body) {
+                push(out, Severity::Error, "P10-9", "pointer dereference hidden in a macro".into(), i, 0, t.len(), None);
+            }
+            continue;
+        }
+        if t.starts_with('#') {
+            continue;
+        }
+        if let Some(m) = fnptr.find(line) {
+            push(out, Severity::Error, "P10-9", "function pointers are not permitted".into(),
+                 i, col_of(line, m.start()), col_of(line, m.end()), Some("call the function directly, or use a switch".into()));
+        }
+        if !line.contains("main(") {
+            if let Some(m) = dstar.find(line) {
+                push(out, Severity::Error, "P10-9", "more than one level of pointer dereference".into(),
+                     i, col_of(line, m.start()), col_of(line, m.end()), Some("use a struct or an index instead of a pointer to a pointer".into()));
+            }
+        }
+        if let Some(m) = arrows.find(line) {
+            push(out, Severity::Error, "P10-9", "chained -> is more than one level of dereference".into(),
+                 i, col_of(line, m.start()), col_of(line, m.end()), Some("copy the inner pointer into a local first, then use it".into()));
+        }
+    }
+}
+
 // ───────────────────────── entry point ─────────────────────────
 
 pub fn analyze(src: &str, lang: Lang) -> Vec<Diagnostic> {
+    analyze_opts(src, lang, false)
+}
+
+/// `p10` adds the NASA/JPL "Power of 10" rules on top of the normal ones.
+pub fn analyze_opts(src: &str, lang: Lang, p10: bool) -> Vec<Diagnostic> {
     let raw: Vec<&str> = src.split('\n').collect();
     let clean = mask(src);
     let lay = scan_layout(&clean);
@@ -980,6 +1209,10 @@ pub fn analyze(src: &str, lang: Lang) -> Vec<Diagnostic> {
     }
     for f in &lay.functions {
         check_function(&clean, &lay, &global_arrays, f, lang, &mut out);
+    }
+
+    if p10 {
+        p10_rules(&clean, &lay, lang, &mut out);
     }
 
     apply_waivers(&raw, &mut out);
@@ -1009,6 +1242,13 @@ mod tests {
     fn flags_use_after_free() {
         let src = "int main(void) {\n    int *p = malloc(4);\n    if (!p) return 1;\n    free(p);\n    printf(\"%d\", *p);\n    return 0;\n}\n";
         assert!(codes(src, Lang::C).contains(&"DR106".to_string()));
+    }
+
+    #[test]
+    fn p10_flags_recursion() {
+        let src = "int f(int n)\n{\n    return f(n - 1);\n}\n";
+        let all = analyze_opts(src, Lang::C, true);
+        assert!(all.iter().any(|d| d.code == "P10-1"));
     }
 
     #[test]

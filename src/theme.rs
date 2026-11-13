@@ -8,6 +8,7 @@ pub enum ThemeKind {
     Bloomberg,
     Mocha,
     Fluent,
+    Space,
 }
 
 #[derive(Clone, Copy)]
@@ -47,13 +48,14 @@ fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
 }
 
 impl ThemeKind {
-    pub const ALL: [ThemeKind; 3] = [ThemeKind::Bloomberg, ThemeKind::Mocha, ThemeKind::Fluent];
+    pub const ALL: [ThemeKind; 4] = [ThemeKind::Bloomberg, ThemeKind::Mocha, ThemeKind::Fluent, ThemeKind::Space];
 
     pub fn name(self) -> &'static str {
         match self {
             ThemeKind::Bloomberg => "Bloomberg (dark)",
             ThemeKind::Mocha => "Catppuccin Mocha (dark)",
             ThemeKind::Fluent => "Windows 11 (light)",
+            ThemeKind::Space => "SpaceMode (NASA-inspired)",
         }
     }
 
@@ -133,6 +135,31 @@ impl ThemeKind {
                 gutter: hex(0x9A9A9A),
                 selection: hex(0xCCE4F7),
                 radius: 6.0,
+            },
+            ThemeKind::Space => Palette {
+                dark: true,
+                bg: hex(0x050A1C),
+                panel: hex(0x0A1330),
+                surface: hex(0x112250),
+                border: hex(0x1F3A7A),
+                text: hex(0xE8EEFF),
+                subtext: hex(0x8FA3D6),
+                accent: hex(0xFC3D21),
+                on_accent: hex(0xFFFFFF),
+                error: hex(0xFC3D21),
+                warning: hex(0xFFB020),
+                ok: hex(0x3DDC97),
+                info: hex(0x4DA3FF),
+                keyword: hex(0x4DA3FF),
+                typ: hex(0x7FD1FF),
+                string: hex(0x3DDC97),
+                number: hex(0xFFB020),
+                comment: hex(0x5C6F9E),
+                preproc: hex(0xB7A3FF),
+                func: hex(0xFFFFFF),
+                gutter: hex(0x41588F),
+                selection: hex(0x17408F),
+                radius: 2.0,
             },
         }
     }
